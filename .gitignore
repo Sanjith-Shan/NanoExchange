@@ -1,0 +1,45 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+_deps/
+
+# Object and binary files
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.exe
+
+# Generated benchmark charts. These are regenerated from the JSON by the plot
+# script, so they do not belong in version control.
+results/*.png
+
+# Generated sample data
+data/*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local clangd helper with a machine specific include path
+compile_flags.txt
+
+# Internal build specification. Kept local, not part of the published project.
+CLAUDE.md
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+
+# clangd index cache
+.cache/

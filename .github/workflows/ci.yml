@@ -1,0 +1,36 @@
+name: ci
+
+# Build the engine, run the full test suite, and smoke run the demo on every
+# push and pull request. Benchmarks are built but not timed in CI because shared
+# runners have too much noise to produce meaningful latency numbers.
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ ninja-build
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Smoke run the demo
+        run: ./build/nano_exchange --orders 200000 --symbol AAPL
+
+      - name: Smoke run the benchmarks
+        run: ./build/bin/benchmarks --benchmark_min_time=0.01s --benchmark_filter=BM_AddLimit
