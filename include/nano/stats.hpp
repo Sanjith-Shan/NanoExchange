@@ -9,11 +9,26 @@
 
 namespace nano {
 
-// A simple latency sample collector. It stores every sample so it can report
-// exact percentiles and export the raw distribution for histogram plotting.
-// Storing all samples costs memory but keeps the percentiles honest. For a
-// bounded footprint a production system would use an HdrHistogram instead, which
-// we note in the design writeup.
+// A latency sample collector that stores every sample.
+//
+// Storing them all is the right choice here and it is worth being clear about
+// why, because an earlier version of this comment apologised for it and pointed
+// at HdrHistogram as the thing a real system would use. That framing was wrong
+// in both directions.
+//
+// Keeping every sample gives exact percentiles. A histogram gives approximate
+// ones, bounded by the precision it was configured with. For a benchmark that
+// runs for a few seconds and records a known number of operations, exact is
+// available and costs eight megabytes per million samples, so exact is what it
+// should report.
+//
+// What HdrHistogram is actually for is the case this is not. Recording
+// continuously, in a process that must not grow, for hours, where the choice is
+// between an approximate percentile and no percentile at all. A feed handler
+// running a whole trading day needs one. A benchmark harness does not.
+//
+// So the tradeoff is bounded memory against exactness, and this side of it is
+// the correct side for what this file does.
 class LatencyStats {
 public:
     void reserve(std::size_t n) { samples_.reserve(n); }
