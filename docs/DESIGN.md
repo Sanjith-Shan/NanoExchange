@@ -327,3 +327,86 @@ matching system would go further in several concrete ways.
 None of these change the core algorithm. They change the environment around it so
 that the few nanoseconds of real work per fill are not buried under microseconds of
 avoidable overhead.
+
+
+---
+
+## The measurement retrofit
+
+Added 2026-09-20, after a feed handler built on this engine
+([Tickerplant](https://github.com/Sanjith-Shan/Tickerplant)) needed a
+measurement harness and this project turned out to need the same one.
+
+The criticism that prompted it was specific and fair. The latency table was
+measured honestly and reported without saying which core it ran on, whether that
+core was isolated, or what else the machine was doing. A median taken that way
+is still a median. A p99 taken that way is substantially a measurement of the
+operating system scheduler, and a reader who works on latency professionally
+reads an unlabelled p99 as a measurement not yet done properly.
+
+### What was added
+
+`include/nano/measure.hpp`. Core pinning through `sched_setaffinity` where the
+platform has it, a machine label carrying CPU, operating system, compiler, build
+type and whether pinning was **achieved** rather than merely requested, and the
+load average at the moment the run started.
+
+The load average is there because of a lesson from a sibling project that
+published benchmark numbers taken at a load average of 28 to 65 on twelve
+threads without anyone noticing at the time. The demo now prints a warning above
+its own results when the machine was busy.
+
+macOS reports honestly that it cannot pin at all. `THREAD_AFFINITY_POLICY` is a
+hint about cache sharing and returns `KERN_NOT_SUPPORTED` on Apple Silicon
+anyway, and there is no way to stop the scheduler moving a thread between a
+performance core and an efficiency core, which changes the clock rate underneath
+a measurement. `current_core()` returns -1 rather than 0 there, so that unknown
+cannot be mistaken for core zero in a results file.
+
+### The histogram question, answered rather than apologised for
+
+`stats.hpp` used to carry a line saying that a production system would use an
+HdrHistogram instead of storing every sample. That was the wrong framing in both
+directions and it has been rewritten.
+
+Keeping every sample gives **exact** percentiles. A histogram gives approximate
+ones bounded by its configured precision. For a benchmark that runs for seconds
+and records a known number of operations, exact is available at eight megabytes
+per million samples, so exact is what it should report.
+
+What HdrHistogram is actually for is the case this is not. Recording
+continuously, in a process that must not grow, for hours, where the choice is
+between an approximate percentile and no percentile at all. A feed handler
+running a whole trading day needs one, which is why Tickerplant uses one. A
+benchmark harness does not.
+
+### What the retrofit found
+
+Three things, and the third was not expected.
+
+**The median was right all along.** Add limit measured 125 nanoseconds at the
+median unpinned on macOS under clang, and 125 nanoseconds pinned on Linux under
+gcc. Across an operating system, a compiler, and a scheduling policy it did not
+move. The original caveat said the median was the honest measure and the tail
+was noise, and that turned out to be exactly correct.
+
+**Pinning on a quiet machine bought nothing measurable.** With nothing competing
+there is no migration to prevent.
+
+**Pinning on a busy machine improved the best case and made the worst case
+worse.** With eight spinning threads on other cores, pinning cut every
+operation's best p99 by 15 to 25 percent and raised every worst p99 by 20 to 50
+percent, leaving the mean roughly where it was.
+
+That last one is the useful finding. **Pinning to a core you do not own is a
+bet.** When the core is quiet you keep your cache and win. When something else
+lands there you cannot migrate away, which unpinned you could, so you wait.
+Pinning takes away the scheduler's ability to help along with its ability to
+hurt.
+
+Which is precisely the argument for `isolcpus`, and is the piece still missing.
+A pinned thread on an isolated core is not betting, because nothing else is
+permitted there. The kernel command line for that is
+`isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3 intel_pstate=disable idle=poll`, and
+until a box configured that way runs this, the honest claim is that the median
+is solid and the tail is a distribution rather than a number.

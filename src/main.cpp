@@ -7,6 +7,7 @@
 
 #include "nano/matching_engine.hpp"
 #include "nano/order_book.hpp"
+#include "nano/measure.hpp"
 #include "nano/stats.hpp"
 #include "nano/types.hpp"
 
@@ -26,6 +27,7 @@ struct Config {
     uint32_t    traders = 100;
     std::string symbol  = "AAPL";
     uint64_t    seed    = 42;
+    int         pin     = -1;   // core to pin to, Linux only
 };
 
 Config parse_args(int argc, char** argv) {
@@ -39,9 +41,11 @@ Config parse_args(int argc, char** argv) {
             c.symbol = argv[++i];
         } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             c.seed = std::strtoull(argv[++i], nullptr, 10);
+        } else if (std::strcmp(argv[i], "--pin") == 0 && i + 1 < argc) {
+            c.pin = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--help") == 0) {
             std::printf("Usage nano_exchange [--orders N] [--traders N] "
-                        "[--symbol SYM] [--seed N]\n");
+                        "[--symbol SYM] [--seed N] [--pin CORE]\n");
             std::exit(0);
         }
     }
@@ -76,6 +80,31 @@ void print_book(const OrderBook& book, uint32_t depth) {
 
 int main(int argc, char** argv) {
     const Config cfg = parse_args(argc, argv);
+
+    // Pin before anything is measured, and report what was actually achieved
+    // rather than what was asked for. A table that says "pinned" above a run
+    // that could not pin is worse than one that says nothing.
+    PinningReport pin;
+    if (cfg.pin >= 0) {
+        pin = pin_to_core(cfg.pin);
+        if (!pin.achieved) {
+            std::fprintf(stderr, "could not pin to core %d: %s\n", cfg.pin, pin.reason);
+        }
+    }
+    BoxInfo box = detect_box();
+    box.pinned  = pin.achieved;
+
+    std::printf("Machine   %s\n", box.one_line().c_str());
+    if (pin.requested) {
+        std::printf("Pinning   %s", pin.achieved ? "achieved" : pin.reason);
+        if (pin.achieved) std::printf(", running on core %d", current_core());
+        std::printf("\n");
+    } else if (pinning_supported()) {
+        std::printf("Pinning   not requested. Pass --pin CORE for a tail worth reading\n");
+    } else {
+        std::printf("Pinning   unavailable on this platform, so the median is the honest\n"
+                    "          measure here and the tail is scheduler noise\n");
+    }
 
     std::printf("NanoExchange simulation\n");
     std::printf("  orders  %llu\n", static_cast<unsigned long long>(cfg.orders));
@@ -223,6 +252,20 @@ int main(int argc, char** argv) {
                 static_cast<unsigned long long>(trades_done));
     std::printf("  wall time            %.3f s\n", seconds);
     std::printf("  throughput           %.2f million msgs/sec\n", msg_per_sec / 1e6);
+
+    if (!box.pinned) {
+        std::printf("\n  This run was not pinned to a core, so the median is the honest\n"
+                    "  measure and the tail is operating system scheduling noise. Say that\n"
+                    "  before anyone else does.\n");
+    } else if (!box.isolated) {
+        std::printf("\n  Pinned but not isolated. No isolcpus on the kernel command line, so\n"
+                    "  the core is this process's by preference and not by exclusion, and the\n"
+                    "  far tail still contains whatever else the machine chose to run there.\n");
+    }
+    if (box.load_1min >= 0.0 && !box.quiet()) {
+        std::printf("\n  The machine was busy while this ran. Treat every timing above as a\n"
+                    "  lower bound on what the engine can do and rerun it on a quiet box.\n");
+    }
     std::printf("  pool in use          %zu / %zu orders\n", pool.size(), pool.capacity());
     return 0;
 }

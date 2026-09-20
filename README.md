@@ -24,30 +24,71 @@ every choice is written up in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Performance
 
+Every table here says what it ran on, whether the thread was actually pinned,
+and what else the machine was doing. That labelling was added in the
+measurement retrofit and it is the reason the numbers below are worth reading.
+
 Measured with the bundled demo driving one million messages through a single
-book on an Apple Silicon laptop, built with `-O3` and native tuning. The process
-is not pinned to an isolated core, so the median is the honest measure of engine
-work and the far tail is dominated by operating system scheduling noise. The
-design writeup explains this in detail.
+book. Nanoseconds.
 
-| Operation    | Median | p99   | Notes                                  |
-|--------------|--------|-------|----------------------------------------|
-| Add limit    | ~125ns | ~625ns| Add a resting limit order              |
-| Add market   | ~167ns | ~875ns| Sweep the opposite side                |
-| Cancel       | ~125ns | ~350ns| Remove a resting order by id           |
-| Modify       | ~42ns  | ~667ns| Cancel and re add at new terms         |
-| Best bid ask | <50ns  | -     | Top of book query                      |
-| Snapshot(5)  | ~700ns | -     | Build a five level depth snapshot      |
+| Operation | p50 | p99 |
+|---|---|---|
+| Add limit | **125** | 416 |
+| Add market | 167 | 500 |
+| Cancel | 125 | 250 |
+| Modify | 42 | 416 |
+| Best bid ask | under the clock resolution | 42 |
+| Snapshot(5) | 250 | 791 |
 
-End to end throughput is in the range of a few million messages per second on
-one thread, higher on a shallow book and lower as the book deepens and matching
-walks more levels.
-
-Run the demo yourself to reproduce the table.
+Ubuntu 24.04, gcc 13.3, `-O3`, Apple M3 Pro, one thread, load average 3.00 on 12
+cores, **pinned to core 2 but not isolated**. Best of five runs.
 
 ```
-./build/nano_exchange --orders 1000000 --symbol AAPL
+./build/nano_exchange --orders 1000000 --pin 2
 ```
+
+End to end throughput is a few million messages a second on one thread, higher
+on a shallow book and lower as the book deepens and matching walks more levels.
+
+### What pinning actually bought, which was not what was expected
+
+The original numbers were taken on macOS with no pinning, and said so, with the
+caveat that the median was the honest measure and the tail was scheduler noise.
+The retrofit was supposed to remove that caveat. It half did, and the other half
+is more interesting.
+
+**The median was right all along.** Add limit measured a 125 nanosecond median
+unpinned on macOS with clang, and 125 nanoseconds pinned on Linux with gcc.
+Across an operating system, a compiler, and a scheduling policy, it did not
+move. That is what a median measuring real work looks like.
+
+**Pinning on a quiet machine changed nothing.** Same p50, same p99, run after
+run. With nothing competing, there is no migration to prevent.
+
+**Pinning on a busy machine cut the best case and widened the spread.** Eight
+spinning threads on other cores, five runs each, p99 in nanoseconds.
+
+| Operation | unpinned best | pinned best | unpinned worst | pinned worst |
+|---|---|---|---|---|
+| Add limit | 541 | **459** | 625 | **917** |
+| Add market | 625 | **542** | 750 | **1042** |
+| Cancel | 541 | **416** | 666 | **834** |
+| Modify | 541 | **458** | 583 | **708** |
+
+Pinning improved every best case by 15 to 25 percent and made every worst case
+worse by 20 to 50 percent. The mean p99 barely moved.
+
+The reason is worth stating because it is the whole argument for the next step.
+**Pinning to a core you do not own is a bet.** When that core is quiet you keep
+your cache and win. When something else is scheduled there you cannot migrate
+away from it, which unpinned you could, so you wait. Pinning removes the
+scheduler's ability to help as well as its ability to hurt.
+
+**That is what `isolcpus` is for**, and it is the piece still missing. A pinned
+thread on an isolated core is not making a bet, because nothing else is allowed
+there. Until a box with `isolcpus` on the kernel command line runs this, the
+honest claim is the one above: the median is solid, and the tail is a
+distribution rather than a number.
 
 ### Head to head shootouts
 
